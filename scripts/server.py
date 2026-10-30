@@ -26,6 +26,8 @@ def job(kind, o):
         else:
             r = core.run(o, progress, CANCEL)
             with LOCK: STATE.update(phase="done", result=r, msg="Finished" if r["ok"] else "Finished with problems: see report", done=1, total=1)
+    except core.NothingToWrite as e:
+        with LOCK: STATE.update(phase="error", error=str(e), scan=e.summary, msg="Nothing was written")
     except core.Cancelled:
         with LOCK: STATE.update(phase="cancelled", msg="Cancelled. Files already written are kept; the crosswalk was saved.")
     except Exception as e:

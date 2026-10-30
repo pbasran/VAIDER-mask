@@ -61,6 +61,7 @@ button.p{background:var(--acc);color:#000;font-weight:700;border-color:var(--acc
 <label class="chk"><input type="radio" name="ori" value="fill"><span><b>Fill missing tags.</b> Fills missing PatientPosition, ImageOrientationPatient, FrameOfReferenceUID and ImagePositionPatient from other slices, then ImageSet_N, then the RTSTRUCT (positions are interpolated if needed). Existing values are not changed.</span></label>
 <label class="chk"><input type="radio" name="ori" value="fill_fix"><span><b>Fill missing and fix the label.</b> As above, and where the axes clearly say HFS/HFP/FFS/FFP but the label disagrees, set the label to match the axes. Pixels and coordinates are never changed.</span></label>
 <label class="chk"><input type="checkbox" id="quadruped" checked><span>Set AnatomicalOrientationType to QUADRUPED on image slices</span></label>
+<label class="chk"><input type="checkbox" id="source_by_folder"><span>Top-level folders are separate clinics<br><span class="hint">Patients are always matched on clinic (the DICOM institution name) plus PatientID. Tick this too if the same PatientID can appear in different top-level folders and the institution name is blank or the same. Do not tick it if one animal's files are split across folders such as CT/ and RTSTRUCT/.</span></span></label>
 <div class="grid"><div><label>Minimum distinct slice positions per image set</label><input type="text" id="min_slices" value="41"><span class="hint">0 = no limit. Fewer, or unverifiable geometry, fails the set.</span></div>
 <div><label class="chk" style="margin-top:28px"><input type="checkbox" id="skip_failed_sets" checked><span>Skip sets that fail checks<br><span class="hint">too few slices, geometry unverifiable, or structure set frame matches no image. A patient with no passing set is skipped and gets no ID.</span></span></label></div></div>
 <label>Contrast (CE / No CE column)</label>
@@ -84,7 +85,7 @@ async function ls(p){const r=await api("/api/ls",{path:p});cur=r.path;$("mpath")
 function choose(){$(tgt).value=cur;$("modal").style.display="none"}
 function chooseFile(){const n=prompt("File name in this folder (e.g. scan.dcm):");if(n){$(tgt).value=cur.replace(/[\\/]$/,"")+(cur.includes("\\")?"\\":"/")+n;$("modal").style.display="none"}}
 function read(){const o={};["src","out","crosswalk_dir","site_label","site_id","id_prefix","name_suffix","physician","institution","operator","date_mode","ce_report"].forEach(k=>o[k]=($(k==="crosswalk_dir"?"xw":k).value||"").trim());
- ["remove_owner","remove_staff","remove_station","remove_birthdate","remove_other_ids","remove_private","redact_text","keep_vet_descriptors","quadruped","skip_failed_sets","no_ce"].forEach(k=>o[k]=$(k).checked);
+ ["remove_owner","remove_staff","remove_station","remove_birthdate","remove_other_ids","remove_private","redact_text","keep_vet_descriptors","quadruped","skip_failed_sets","no_ce","source_by_folder"].forEach(k=>o[k]=$(k).checked);
  o.orientation=document.querySelector("input[name=ori]:checked").value;o.min_slices=parseInt($("min_slices").value||"0",10)||0;return o}
 async function go(k){const o=read();
  if(k==="run"){if(o.date_mode==="keep"&&!confirm("Dates will be KEPT. The data will not be fully de-identified. Continue?"))return;
@@ -104,6 +105,7 @@ function render(s){let h="";if(s.scan){const c=s.scan,er=Object.entries(c.exclud
  <tr><td>Patients (will be written)</td><td>${c.patients} (${c.patients_kept})</td></tr><tr><td>Scan sets (will be written)</td><td>${c.sets} (${c.sets_kept})</td></tr><tr><td>Sets failing checks</td><td>${esc(er)}</td></tr>
  <tr><td>Modalities</td><td>${kv(c.modalities)}</td></tr><tr><td>Orientation check (sets)</td><td>${kv(c.orientation)}</td></tr><tr><td>Contrast (sets)</td><td>${kv(c.ce)}</td></tr>
  <tr><td>Sets with tags to fill</td><td>${c.tags_filled_sets}</td></tr><tr><td>Structure set frame matches no image</td><td>${c.frame_mismatch_sets}</td></tr><tr><td>Burned-in annotation flagged</td><td>${c.burned_in_flagged}</td></tr></table>`;
+ if(c.id_name_conflicts)h+=`<div class="warn">${c.id_name_conflicts} PatientID(s) carry more than one animal name. Two clinics may share an ID. Tick "Top-level folders are separate clinics" in section 6 if each clinic has its own folder, then scan again.</div>`;
  if(c.orientation&&c.orientation.mismatch)h+=`<div class="warn">${c.orientation.mismatch} set(s) have a PatientPosition label that disagrees with the image axes. Check them before choosing.</div>`;
  if(c.ce&&c.ce.Unknown)h+=`<div class="warn">${c.ce.Unknown} set(s) have unknown contrast status. Give a report, or tick the no-contrast box if that is true.</div>`;
  if(c.burned_in_flagged)h+=`<div class="warn">Some images say identifiers are burned into the pixels. This tool does NOT remove those. Do not share these images.</div>`}
