@@ -18,7 +18,7 @@ import numpy as np
 import pydicom
 from pydicom.uid import UID
 
-VERSION = "0.3"
+VERSION = "0.3.2"
 DETACHED_STUDY = "1.2.840.10008.3.1.2.3.1"
 
 @dataclass
@@ -26,6 +26,7 @@ class Options:
     src: str = ""
     out: str = ""
     crosswalk_dir: str = ""            # blank -> <out>/CROSSWALK_RESTRICTED
+    source_by_folder: bool = False      # True: the top-level folder of each file is a separate clinic/source, so the same PatientID in two folders is two animals
     site_id: str = "1"
     site_label: str = "Site1"
     id_prefix: str = "Z00"
@@ -278,7 +279,15 @@ def scan(o, progress=lambda *a: None, cancel=None):
         pf, pidx = locate(p, srcdir)
         mod = str(ds.get("Modality", "OT")) or "OT"
         pid = str(ds.get("PatientID", "")).strip() or "NOID_" + hashlib.sha1(str(ds.get("StudyInstanceUID", p)).encode()).hexdigest()[:8]
-        e = dict(path=p, forced=forced, pf=pf, pidx=pidx, pid=pid, mod=mod, sop=str(ds.get("SOPInstanceUID", "")),
+        inst = " ".join(str(ds.get("InstitutionName", "") or "").split())
+        top = ""
+        if o.source_by_folder:
+            try:
+                rp = p.relative_to(srcdir).parts; top = rp[0] if len(rp) > 1 else ""
+            except ValueError: pass
+        src_id = "/".join(x for x in (inst, top) if x)          # clinic / source: institution name and, if asked, the top-level folder
+        pkey = f"{src_id}||{pid}" if src_id else pid             # patients are matched on source + PatientID, never PatientID alone
+        e = dict(path=p, forced=forced, pf=pf, pidx=pidx, pid=pid, pkey=pkey, src=src_id, pname=str(ds.get("PatientName", "")).strip(), mod=mod, sop=str(ds.get("SOPInstanceUID", "")),
                  series=str(ds.get("SeriesInstanceUID", "")), for_uid=str(ds.get("FrameOfReferenceUID", "") or ""),
                  iop=vec(ds.get("ImageOrientationPatient", []) or [], 6), ipp=vec(ds.get("ImagePositionPatient", []) or [], 3),
                  inst=int(ds.InstanceNumber) if present(ds, "InstanceNumber") and str(ds.InstanceNumber).lstrip("-").isdigit() else None,
@@ -315,7 +324,7 @@ def scan(o, progress=lambda *a: None, cancel=None):
 
     ce_rep = parse_ce_report(o.ce_report) if str(o.ce_report).strip() else {}
     bypid = {}
-    for e in entries: bypid.setdefault(e["pid"], []).append(e)
+    for e in entries: bypid.setdefault(e["pkey"], []).append(e)
     patients = []
     for pid in sorted(bypid):
         lst = bypid[pid]
@@ -344,7 +353,7 @@ def scan(o, progress=lambda *a: None, cancel=None):
             s["label"] = f"dicom_output_{s['pidx']}" if gk[0] == "P" else (gk[1] if gk[0] == "S" else "aux-only")
             qc_set(o, s, refhdrs, ce_rep)
             slist.append(s)
-        patients.append(dict(pid=pid, pfs={e["pf"] for e in lst}, sets=slist, tokens=set().union(*[e["tokens"] for e in lst])))
+        patients.append(dict(pid=lst[0]["pid"], pkey=pid, src=lst[0]["src"], pfs={e["pf"] for e in lst}, sets=slist, tokens=set().union(*[e["tokens"] for e in lst])))
     for p in patients:
         p["keep"] = [s for s in p["sets"] if s["pass"] or not o.skip_failed_sets]
     progress("scan", len(files), len(files), "Scan complete")
@@ -441,7 +450,11 @@ def summarize(o, entries, patients, skipped, nref, nfiles):
     cnt = lambda it: dict(Counter(x for x in it if x))
     reasons = Counter(r for s in sets for r in s["reasons"])
     kept = [s for p in patients for s in p["keep"]]
-    return dict(files_seen=nfiles, dicom_files=len(entries), skipped_not_dicom=skipped, imageset_files_skipped=nref,
+    nm = {}
+    for e in entries:
+        if e["pname"]: nm.setdefault(e["pkey"], set()).add(e["pname"])
+    id_conflicts = sum(1 for v in nm.values() if len(v) > 1)   # one PatientID carrying more than one animal name
+    return dict(id_name_conflicts=id_conflicts, files_seen=nfiles, dicom_files=len(entries), skipped_not_dicom=skipped, imageset_files_skipped=nref,
                 patients=len(patients), patients_kept=sum(1 for p in patients if p["keep"]), sets=len(sets), sets_kept=len(kept),
                 excluded_reasons=dict(reasons), modalities=cnt(e["mod"] for e in entries),
                 orientation=cnt(s["orient"] for s in sets), ce=cnt(s["ce"] for s in sets),
@@ -453,7 +466,9 @@ def load_xw(xw):
     P, S = {}, {}
     f = xw / "crosswalk_patients.csv"
     if f.exists():
-        for r in csv.DictReader(open(f, newline="")): P[r["original_PatientID"]] = r
+        for r in csv.DictReader(open(f, newline="")):
+            r.setdefault("source", ""); r["source"] = r["source"] or ""
+            P[f"{r['source']}||{r['original_PatientID']}" if r["source"] else r["original_PatientID"]] = r
     f = xw / "crosswalk_sets.csv"
     if f.exists():
         for r in csv.DictReader(open(f, newline="")): S[r["set_key"]] = r
@@ -471,7 +486,7 @@ def merge_table(path, header, rows, keyfn):
     for r in rows: old[keyfn(r)] = r
     write_table(path, header, list(old.values()))
 
-PH = ["original_PatientID", "original_patient_folder", "site_id", "patient_number", "new_PatientID", "new_PatientName", "date_offset_days"]
+PH = ["original_PatientID", "source", "original_patient_folder", "site_id", "patient_number", "new_PatientID", "new_PatientName", "date_offset_days"]
 SH = ["set_key", "new_PatientID", "new_set", "original_patient_folder", "original_set_label"]
 FH = ["original_relative_path", "original_SOPInstanceUID", "new_file", "new_SOPInstanceUID", "original_PatientID", "new_PatientID"]
 RH = ["original_patient_folder", "original_PatientID", "original_set_label", "new_PatientID", "new_set", "included", "reasons", "n_images", "n_distinct_slice_positions", "frame_match", "ce_status", "tags_filled"]
@@ -480,22 +495,30 @@ DH = ["new_patient_id", "new_set", "modalities", "n_images", "n_distinct_slice_p
       "anatomical_region", "contoured_rois", "ce_status", "ce_source", "orientation_status", "orientation_action", "frame_match", "structure_refs_found", "tags_filled", "qc_pass", "qc_notes", "burned_in_flag"]
 
 # ---------- run ----------
+class NothingToWrite(ValueError):
+    """Raised when no scan set passes the checks. Carries the scan summary so the page can show the reasons."""
+    def __init__(self, msg, summary):
+        super().__init__(msg); self.summary = summary
+
+
 def run(o, progress=lambda *a: None, cancel=None):
     plan, summary = scan(o, progress, cancel)
     src, out, data, xw = resolve_paths(o); srcdir = src if src.is_dir() else src.parent
     pats = [p for p in plan["patients"] if p["keep"]]
-    if not pats: raise ValueError("No scan sets passed the checks, so nothing was written. See the scan summary for the reasons.")
+    if not pats:
+        why = "; ".join(f"{k} ({v})" for k, v in (summary.get("excluded_reasons") or {}).items()) or "no DICOM image sets were found"
+        raise NothingToWrite(f"No scan sets passed the checks, so nothing was written. Reasons: {why}. Scroll down for the scan table, or lower the minimum slice count.", summary)
     xw.mkdir(parents=True, exist_ok=True); data.mkdir(parents=True, exist_ok=True)
     secf = xw / "deid_secret.bin"; secret = secf.read_bytes() if secf.exists() else secrets.token_bytes(32)
     P, S = load_xw(xw)
     for p in pats:                                   # IDs are fixed the first time a patient is seen and never recomputed
-        r = P.get(p["pid"])
+        r = P.get(p["pkey"])
         if r is None:
             n = max([int(x["patient_number"]) for x in P.values() if x["site_id"] == str(o.site_id)], default=0) + 1
-            r = dict(original_PatientID=p["pid"], original_patient_folder="", site_id=str(o.site_id), patient_number=n,
+            r = dict(original_PatientID=p["pid"], source=p["src"], original_patient_folder="", site_id=str(o.site_id), patient_number=n,
                      new_PatientID=f"{o.id_prefix}{o.site_id}{n:03d}", new_PatientName=f"{o.site_label}_{n:03d}^{o.name_suffix}",
                      date_offset_days=secrets.randbelow(364) + 1)
-            P[p["pid"]] = r
+            P[p["pkey"]] = r
         r["original_patient_folder"] = ";".join(sorted(set(filter(None, r["original_patient_folder"].split(";"))) | {x for x in p["pfs"] if x}))
         p["x"] = r
         for s in p["keep"]:

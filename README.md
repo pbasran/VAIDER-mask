@@ -11,7 +11,7 @@ VAIDER-mask removes owner, patient and clinic identifiers from veterinary CT, MR
 1. Install Python 3.
 2. Mac: double-click `START_Mac.command` (if blocked, right-click, Open). Windows: double-click `START_Windows.bat`.
 3. The first run creates a private Python environment in your home folder and installs `pydicom` and `numpy` (needs internet once). A page opens in your browser.
-4. Try it on synthetic data first: `python3 scripts/make_test_data.py <folder>` creates Pinnacle-style test patients with deliberate problems (all identifiers invented).
+4. Try it on synthetic data first: `python3 scripts/make_test_data.py <folder>` creates six Pinnacle-style test patients with 45 slices each, with deliberate problems (all identifiers invented). A first run with default settings writes three of them; the others fail on purpose.
 
 ## What it does
 

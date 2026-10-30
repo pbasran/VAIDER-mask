@@ -1,6 +1,6 @@
 """Synthetic Pinnacle-style DICOM for testing VAIDER-mask. All names are invented.
 Usage: python make_test_data.py <outdir>
-Creates 5 patient folders: dicom_output_N + rtstruct_N.dcm (+ ImageSet_N.DICOM reference copies with a different frame),
+Creates 6 patient folders (45 slices each by default, so a first test run passes the 41-slice rule; the short series is deliberate): dicom_output_N + rtstruct_N.dcm (+ ImageSet_N.DICOM reference copies with a different frame),
 a dog named Max with a structure called Maxilla, an owner named Ana with a structure called PLANAR, a short series,
 a series with a missing orientation tag, a label/axes mismatch, and a structure set whose frame matches no CT."""
 import sys, numpy as np
@@ -17,7 +17,7 @@ def common(ds, name, pid, owner, study, series):
     ds.PatientName, ds.PatientID, ds.ResponsiblePerson, ds.PatientBirthDate = name, pid, owner, "20150301"
     ds.PatientSpeciesDescription, ds.PatientBreedDescription, ds.PatientSex, ds.PatientAge = "Canine", "Labrador", "M", "009Y"
     ds.StudyInstanceUID, ds.SeriesInstanceUID = study, series; ds.StudyDate = ds.SeriesDate = "20240110"
-    ds.AccessionNumber = "ACC" + pid; ds.StationName = "CTROOM1"; ds.OperatorsName = "Tech^Pat"; ds.PerformingPhysicianName = "Doc^Who"
+    ds.AccessionNumber = "ACC" + pid; ds.InstitutionName = INST[0]; ds.StationName = "CTROOM1"; ds.OperatorsName = "Tech^Pat"; ds.PerformingPhysicianName = "Doc^Who"
 
 def ct(path, name, pid, owner, study, series, frame, pos, iop, z, ce=False, drop=(), sop=None):
     sop = sop or generate_uid(); ds = mk(path, "1.2.840.10008.5.1.4.1.1.2", "CT", sop); common(ds, name, pid, owner, study, series)
@@ -49,16 +49,19 @@ def rs(path, name, pid, owner, study, frame, refs, rois):
     c = Dataset(); c.ReferencedSOPClassUID = "1.2.840.10008.3.1.2.3.1"; c.ReferencedSOPInstanceUID = study; c.ContourImageSequence = items
     ds.ReferencedStudySequence = [c]; ds.save_as(path)
 
+INST = ["Clinic A"]
 HFS, FFS = [1, 0, 0, 0, 1, 0], [-1, 0, 0, 0, 1, 0]
-def make(root, n_slices=5, prefix="VET"):
+def make(root, n_slices=45, prefix="VET"):
     root = Path(root)
     cases = [  # name, pid, owner, patient folder, rois, special
         ("Max^Rover", prefix + "1001", "Ana^Smith", "Patient_101", ["Maxilla", "PLANAR", "Brain", "GTV"], {}),
         ("Bella^Rover", prefix + "1002", "Bob^Jones", "Patient_102", ["Liver", "Kidney_L"], {"mismatch": True}),
         ("Coco^Dog", prefix + "1003", "Lee^Ann", "Patient_103", ["Lung", "Heart"], {"short": True}),
         ("Duke^Dog", prefix + "1004", "Kim^Lou", "Patient_104", ["Femur", "Tibia"], {"noiop": True}),
-        ("Echo^Dog", prefix + "1005", "Ray^Sue", "Patient_105", ["Brain", "Skull"], {"badframe": True})]
+        ("Echo^Dog", prefix + "1005", "Ray^Sue", "Patient_105", ["Brain", "Skull"], {"badframe": True}),
+        ("Finn^Pup", prefix + "1001", "Joe^Park", "ClinicB_Patient_201", ["Spleen", "Bladder"], {"clinic": "Clinic B"})]   # same PatientID as Max, different dog, different clinic
     for name, pid, ow, folder, rois, sp in cases:
+        INST[0] = sp.get("clinic", "Clinic A")
         d = root / folder; d.mkdir(parents=True, exist_ok=True)
         for idx, ce in ((0, False), (1, True)):
             if idx == 1 and sp: continue
@@ -72,4 +75,4 @@ def make(root, n_slices=5, prefix="VET"):
                 isd = d / "ImageSet_0.DICOM"; isd.mkdir(); other = generate_uid()
                 for z in range(ns): ct(isd / f"s{z}.dcm", name, pid, ow, st, se, other, "HFS", HFS, z, ce, sop=refs[z])
         (d / "notes.txt").write_text("not dicom")
-if __name__ == "__main__": make(sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 5, sys.argv[3] if len(sys.argv) > 3 else "VET")
+if __name__ == "__main__": make(sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 45, sys.argv[3] if len(sys.argv) > 3 else "VET")
