@@ -1,0 +1,115 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VAIDER-mask</title>
+<style>
+:root{--bg:#fff;--fg:#1d2733;--mut:#5b6775;--bd:#d5dbe3;--card:#f6f8fa;--acc:#f5c242;--ok:#1a7f37;--warn:#9a6700;--bad:#c62828}
+@media(prefers-color-scheme:dark){:root{--bg:#14181d;--fg:#e6ebf1;--mut:#9aa6b4;--bd:#2e3844;--card:#1b2128;--acc:#f5c242;--ok:#4cc26b;--warn:#e3b341;--bad:#ff7b72}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:16px}h1{font-size:20px;margin:4px 0}h2{font-size:15px;margin:0 0 8px}
+.sub{color:var(--mut);margin:0 0 12px}.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:12px;margin:10px 0}
+label{display:block;font-weight:600;margin:8px 0 3px}.row{display:flex;gap:6px}.row input{flex:1}
+input[type=text]{width:100%;padding:7px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}
+button{padding:7px 12px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);cursor:pointer}
+button.p{background:var(--acc);color:#000;font-weight:700;border-color:var(--acc)}button:disabled{opacity:.5;cursor:not-allowed}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:0 16px}
+.chk{display:flex;gap:8px;align-items:flex-start;font-weight:400;margin:5px 0}.chk input{margin-top:3px}
+.hint{color:var(--mut);font-size:13px;font-weight:400}.warn{border-left:4px solid var(--warn);padding:6px 10px;background:var(--bg);margin:8px 0;font-size:13px}
+.bar{height:20px;background:var(--bg);border:1px solid var(--bd);border-radius:10px;overflow:hidden}.bar>div{height:100%;width:0;background:var(--acc);transition:width .2s}
+#msg{margin:6px 0;font-weight:600}.ok{color:var(--ok)}.bad{color:var(--bad)}table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-bottom:1px solid var(--bd);padding:4px 6px;text-align:left}
+#modal{position:fixed;inset:0;background:#0008;display:none;align-items:center;justify-content:center}#modal>div{background:var(--bg);width:min(600px,94vw);max-height:80vh;overflow:auto;padding:12px;border-radius:8px}
+.dir{padding:5px;cursor:pointer;border-bottom:1px solid var(--bd)}.dir:hover{background:var(--card)}
+.brand{background:#000;color:#dadada;padding:14px 16px;border-bottom:4px solid #f5c242}.brand>div{max-width:860px;margin:0 auto;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px}
+.wm{font:700 26px/1 Eurostile,"Bank Gothic","Arial Black",system-ui,sans-serif;letter-spacing:.14em}.wm b{color:#f5c242}.tag{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#dadada}
+.brand .name{margin-left:auto;font:600 15px system-ui,sans-serif;color:#f5c242}
+</style></head><body><header class="brand"><div><span class="wm">V<b>AI</b>DER LAB</span><span class="tag">Veterinary AI in Diagnostic Imaging and Radiotherapy</span><span class="name">VAIDER-mask</span></div></header><main>
+<h1>Veterinary DICOM anonymizer <span class="hint">v__VERSION__ · DRAFT, not yet validated</span></h1>
+<p class="sub">Runs only on this computer. No network, no AI. Test on phantom or synthetic data first. Draft software: validate on your own data before relying on it.</p>
+
+<div class="card"><h2>1. Source (data to de-identify)</h2>
+<div class="row"><input type="text" id="src" placeholder="Folder (with subfolders for many patients) or a single .dcm file"><button onclick="pick('src')">Browse</button></div>
+<div class="hint">A folder is searched through all subfolders. Patients are grouped by PatientID. Non-DICOM files are skipped.</div>
+<h2 style="margin-top:12px">2. Output folder</h2>
+<div class="row"><input type="text" id="out" placeholder="Where de-identified data will be written"><button onclick="pick('out')">Browse</button></div>
+<div class="hint">Creates <b>DEID_DATA</b> here (shareable after review): <code>&lt;NewID&gt;/set_NN/CT/…</code>, plus <b>deid_sets.csv</b> (one row per scan set), <b>deid_index.csv</b> (one row per file) and run_report.json. None of these contain original names.</div>
+<h2 style="margin-top:12px">3. Crosswalk (links new IDs back to real animals)</h2>
+<div class="row"><input type="text" id="xw" placeholder="Blank = CROSSWALK_RESTRICTED next to DEID_DATA"><button onclick="pick('xw')">Browse</button></div>
+<div class="warn"><b>Restricted.</b> The crosswalk identifies the animals and clients. It holds the key, set map, and <b>anonymization_report.csv</b> (original folder names). By default it sits beside DEID_DATA, not inside it. <b>Never share, analyse from, or commit the whole output folder.</b> Share DEID_DATA only. Better: choose a separate restricted folder above. Reuse the same crosswalk folder for later batches: each patient keeps the ID first assigned, and each site numbers its own patients (Site 2 starts at Z002001).</div></div>
+
+<div class="card"><h2>4. Naming (veterinary defaults)</h2><div class="grid">
+<div><label>Site label</label><input type="text" id="site_label" value="Site1"><span class="hint">New name: Site1_001^CornellRT</span></div>
+<div><label>Site number (1 digit, this batch)</label><input type="text" id="site_id" value="1"><span class="hint">New ID: Z001001</span></div>
+<div><label>ID prefix</label><input type="text" id="id_prefix" value="Z00"></div>
+<div><label>Name suffix</label><input type="text" id="name_suffix" value="CornellRT"></div>
+<div><label>Referring physician (replacement)</label><input type="text" id="physician" value="BigRed^Dr"></div>
+<div><label>Institution (replacement)</label><input type="text" id="institution" value="CornellRT"></div></div></div>
+
+<div class="card"><h2>5. What to remove or change</h2><div class="grid"><div>
+<label class="chk"><input type="checkbox" id="remove_owner" checked><span>Owner / client details<br><span class="hint">responsible person, address, phone, history, comments</span></span></label>
+<label class="chk"><input type="checkbox" id="remove_staff" checked><span>Clinician and operator names<br><span class="hint">performing, reading, requesting, operators</span></span></label>
+<label class="chk"><input type="checkbox" id="remove_station" checked><span>Station, device serial, institution address</span></label>
+<label class="chk"><input type="checkbox" id="remove_birthdate" checked><span>Birth date</span></label></div><div>
+<label class="chk"><input type="checkbox" id="remove_other_ids" checked><span>Accession number, study ID, issuer IDs</span></label>
+<label class="chk"><input type="checkbox" id="remove_private" checked><span>Private (vendor) tags<br><span class="hint">can hide names; keep only if validated</span></span></label>
+<label class="chk"><input type="checkbox" id="redact_text" checked><span>Redact patient/owner words in free text</span></label>
+<label class="chk"><input type="checkbox" id="keep_vet_descriptors" checked><span>Keep species, breed, sex/neutered, age, weight, size<br><span class="hint">useful for research; breed can help re-identify rare animals</span></span></label></div></div>
+<label>Dates</label><select id="date_mode" style="padding:6px"><option value="shift" selected>Shift (random per animal, intervals kept)</option><option value="remove">Remove all dates</option><option value="keep">Keep (not de-identified)</option></select>
+<label>Operator (for the run report)</label><input type="text" id="operator" placeholder="Your name or initials"></div>
+
+<div class="card"><h2>6. Scan sets, orientation and image frame</h2>
+<div class="hint">Each patient can have several scan sets (a CT series with its structure set, e.g. <code>dicom_output_0</code> + <code>rtstruct_0.dcm</code>). Each set is written to its own folder. Pinnacle <code>ImageSet_N.DICOM</code> folders are never copied: they are used only as a source of missing tag values when filling is on.</div>
+<label>Patient orientation vs image frame</label>
+<label class="chk"><input type="radio" name="ori" value="audit" checked><span><b>Report only (default).</b> Compares the PatientPosition label (HFS/HFP/FFS/FFP) with the image axes. Nothing is changed.</span></label>
+<label class="chk"><input type="radio" name="ori" value="fill"><span><b>Fill missing tags.</b> Fills missing PatientPosition, ImageOrientationPatient, FrameOfReferenceUID and ImagePositionPatient from other slices, then ImageSet_N, then the RTSTRUCT (positions are interpolated if needed). Existing values are not changed.</span></label>
+<label class="chk"><input type="radio" name="ori" value="fill_fix"><span><b>Fill missing and fix the label.</b> As above, and where the axes clearly say HFS/HFP/FFS/FFP but the label disagrees, set the label to match the axes. Pixels and coordinates are never changed.</span></label>
+<label class="chk"><input type="checkbox" id="quadruped" checked><span>Set AnatomicalOrientationType to QUADRUPED on image slices</span></label>
+<div class="grid"><div><label>Minimum distinct slice positions per image set</label><input type="text" id="min_slices" value="41"><span class="hint">0 = no limit. Fewer, or unverifiable geometry, fails the set.</span></div>
+<div><label class="chk" style="margin-top:28px"><input type="checkbox" id="skip_failed_sets" checked><span>Skip sets that fail checks<br><span class="hint">too few slices, geometry unverifiable, or structure set frame matches no image. A patient with no passing set is skipped and gets no ID.</span></span></label></div></div>
+<label>Contrast (CE / No CE column)</label>
+<label class="chk"><input type="checkbox" id="no_ce"><span>My dataset has no contrast-enhanced scans (every set = No CE)</span></label>
+<div class="row"><input type="text" id="ce_report" placeholder="Optional: CE/contour report .txt (set_ce_contour_report.txt format)"><button onclick="pick('ce_report')">Browse</button></div>
+<div class="hint">Order: report, then declared above, then the DICOM contrast tag, else Unknown. The source is recorded for each set.</div></div>
+
+<div class="card"><div class="row"><button onclick="go('scan')" id="bScan">Scan only (dry run)</button><button class="p" onclick="go('run')" id="bRun">De-identify</button><button onclick="cancel()" id="bCan" disabled>Cancel</button><button onclick="quit()" style="margin-left:auto">Quit</button></div>
+<div id="msg">Ready</div><div class="bar"><div id="fill"></div></div><div id="res"></div></div>
+
+<div id="modal"><div><div class="row"><input type="text" id="mpath"><button onclick="ls(mpath.value)">Go</button></div><div id="mlist"></div>
+<div class="row" style="margin-top:8px"><button class="p" onclick="choose()">Use this folder</button><button onclick="chooseFile()" id="bFile">Use a file here…</button><button onclick="modal.style.display='none'">Close</button></div></div></div>
+</main><script>
+const T="__TOKEN__",$=id=>document.getElementById(id);let tgt="",cur="";
+const api=(p,d)=>fetch(p,{method:"POST",headers:{"X-Token":T,"Content-Type":"application/json"},body:JSON.stringify(d||{})}).then(r=>r.json());
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function pick(t){tgt=t;$("modal").style.display="flex";ls($(t).value||"")}
+async function ls(p){const r=await api("/api/ls",{path:p});cur=r.path;$("mpath").value=r.path;
+ $("mlist").innerHTML=`<div class="dir" onclick="ls('${esc(r.parent).replace(/\\/g,"\\\\")}')">.. (up)</div>`+r.dirs.map(d=>`<div class="dir" data-d="${esc(d)}">${esc(d)}</div>`).join("")+`<div class="hint">${r.error?esc(r.error):r.files+" files here"}</div>`;
+ document.querySelectorAll(".dir[data-d]").forEach(e=>e.onclick=()=>ls(cur.replace(/[\\/]$/,"")+(cur.includes("\\")?"\\":"/")+e.dataset.d))}
+function choose(){$(tgt).value=cur;$("modal").style.display="none"}
+function chooseFile(){const n=prompt("File name in this folder (e.g. scan.dcm):");if(n){$(tgt).value=cur.replace(/[\\/]$/,"")+(cur.includes("\\")?"\\":"/")+n;$("modal").style.display="none"}}
+function read(){const o={};["src","out","crosswalk_dir","site_label","site_id","id_prefix","name_suffix","physician","institution","operator","date_mode","ce_report"].forEach(k=>o[k]=($(k==="crosswalk_dir"?"xw":k).value||"").trim());
+ ["remove_owner","remove_staff","remove_station","remove_birthdate","remove_other_ids","remove_private","redact_text","keep_vet_descriptors","quadruped","skip_failed_sets","no_ce"].forEach(k=>o[k]=$(k).checked);
+ o.orientation=document.querySelector("input[name=ori]:checked").value;o.min_slices=parseInt($("min_slices").value||"0",10)||0;return o}
+async function go(k){const o=read();
+ if(k==="run"){if(o.date_mode==="keep"&&!confirm("Dates will be KEPT. The data will not be fully de-identified. Continue?"))return;
+  if(!o.crosswalk_dir&&!confirm("The crosswalk will be saved next to DEID_DATA inside the output folder. Share only DEID_DATA. Continue?"))return}
+ const r=await api("/api/"+k,o);if(r.error){$("msg").textContent=r.error;$("msg").className="bad";return}
+ if(!r.started){$("msg").textContent="A job is already running.";return}poll()}
+async function cancel(){await api("/api/cancel")}
+async function quit(){await api("/api/quit");document.body.innerHTML="<main><p>Stopped. You can close this tab.</p></main>"}
+let busy=false;async function poll(){if(busy)return;busy=true;
+ while(true){const s=await (await fetch("/api/status")).json();const run=["scan","write","verify"].includes(s.phase);
+  $("msg").textContent=s.msg+(s.error?" — "+s.error:"");$("msg").className=s.phase==="error"?"bad":s.phase==="done"&&s.result&&s.result.ok?"ok":"";
+  $("fill").style.width=(s.total?Math.round(100*s.done/s.total):0)+"%";["bScan","bRun"].forEach(i=>$(i).disabled=run);$("bCan").disabled=!run;
+  if(!run){render(s);break}await new Promise(r=>setTimeout(r,400))}busy=false}
+function kv(o){return Object.entries(o||{}).map(([k,v])=>`${esc(k)}: ${esc(v)}`).join(", ")||"none"}
+function render(s){let h="";if(s.scan){const c=s.scan,er=Object.entries(c.excluded_reasons||{}).map(([k,v])=>`${esc(k)} (${v})`).join("; ")||"none";
+ h+=`<h2>Scan (nothing written yet)</h2><table><tr><td>DICOM files</td><td>${c.dicom_files} of ${c.files_seen} (${c.skipped_not_dicom} not DICOM; ${c.imageset_files_skipped} ImageSet reference files not used as data)</td></tr>
+ <tr><td>Patients (will be written)</td><td>${c.patients} (${c.patients_kept})</td></tr><tr><td>Scan sets (will be written)</td><td>${c.sets} (${c.sets_kept})</td></tr><tr><td>Sets failing checks</td><td>${esc(er)}</td></tr>
+ <tr><td>Modalities</td><td>${kv(c.modalities)}</td></tr><tr><td>Orientation check (sets)</td><td>${kv(c.orientation)}</td></tr><tr><td>Contrast (sets)</td><td>${kv(c.ce)}</td></tr>
+ <tr><td>Sets with tags to fill</td><td>${c.tags_filled_sets}</td></tr><tr><td>Structure set frame matches no image</td><td>${c.frame_mismatch_sets}</td></tr><tr><td>Burned-in annotation flagged</td><td>${c.burned_in_flagged}</td></tr></table>`;
+ if(c.orientation&&c.orientation.mismatch)h+=`<div class="warn">${c.orientation.mismatch} set(s) have a PatientPosition label that disagrees with the image axes. Check them before choosing.</div>`;
+ if(c.ce&&c.ce.Unknown)h+=`<div class="warn">${c.ce.Unknown} set(s) have unknown contrast status. Give a report, or tick the no-contrast box if that is true.</div>`;
+ if(c.burned_in_flagged)h+=`<div class="warn">Some images say identifiers are burned into the pixels. This tool does NOT remove those. Do not share these images.</div>`}
+ if(s.result){const r=s.result,v=r.verification,c=r.counters;h+=`<h2>Result</h2><table><tr><td>Files written</td><td>${c.files_written}</td></tr><tr><td>Files with tags filled</td><td>${c.tags_filled_files}</td></tr><tr><td>Orientation labels fixed (files)</td><td>${c.orientation_labels_fixed}</td></tr><tr><td>Private tags removed</td><td>${c.private_removed}</td></tr><tr><td>Text redactions</td><td>${c.text_redactions}</td></tr><tr><td>Errors</td><td>${c.errors}</td></tr>
+ <tr><td>Leftover identifier text (files)</td><td>${v.files_with_leftover_identifier_text}</td></tr><tr><td>Removed tags still present (files)</td><td>${v.files_with_removed_tags_still_present}</td></tr><tr><td>Changed pixel data</td><td>${v.changed_pixel_data}</td></tr><tr><td>Unresolved references</td><td>${v.unresolved_references}</td></tr><tr><td>Structure set frame mismatch in output</td><td>${v.structure_sets_frame_mismatch_in_output}</td></tr></table>
+ <div class="warn">Reviewer sign-off is still required before sharing. Share DEID_DATA only. The crosswalk folder (with the key and <b>anonymization_report.csv</b>, which names original folders) stays restricted.</div>${r.errors&&r.errors.length?"<pre>"+esc(r.errors.join("\n"))+"</pre>":""}`}
+ $("res").innerHTML=h}
+poll();
+</script></body></html>

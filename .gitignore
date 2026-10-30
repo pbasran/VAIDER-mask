@@ -1,0 +1,14 @@
+# Never commit data or keys
+DEID_DATA/
+CROSSWALK_RESTRICTED/
+*.dcm
+*.DCM
+deid_secret.bin
+crosswalk_*.csv
+anonymization_report.csv
+deid_index.csv
+deid_sets.csv
+run_report.json
+__pycache__/
+*.pyc
+.DS_Store
