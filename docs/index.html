@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VAIDER-mask | Veterinary DICOM anonymizer</title>
+<meta name="description" content="VAIDER-mask removes owner, patient and clinic identifiers from veterinary DICOM. Runs on your own computer.">
+<style>
+:root{--bg:#fff;--fg:#1b1b1b;--mut:#5c5c5c;--card:#f5f5f3;--bd:#dedcd6;--gold:#f5c242;--link:#7a5a00}
+@media(prefers-color-scheme:dark){:root{--bg:#111;--fg:#e8e8e6;--mut:#a0a09c;--card:#1b1b1a;--bd:#33332f;--link:#f5c242}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{background:#000;color:#dadada;border-bottom:4px solid var(--gold);padding:18px 16px}
+.in{max-width:820px;margin:0 auto}
+.wm{font:700 28px/1 Eurostile,"Bank Gothic","Arial Black",system-ui,sans-serif;letter-spacing:.14em}.wm b{color:var(--gold)}
+.tag{font-size:12px;letter-spacing:.12em;text-transform:uppercase;margin-top:8px}
+main{max-width:820px;margin:0 auto;padding:8px 16px 56px}
+h1{font-size:34px;line-height:1.15;margin:32px 0 8px}h2{font-size:21px;margin:36px 0 8px}
+.lead{font-size:19px;color:var(--mut);margin:0 0 20px}
+.btn{display:inline-block;background:var(--gold);color:#000;font-weight:700;text-decoration:none;padding:12px 20px;border-radius:8px;margin:4px 8px 4px 0}
+.btn.alt{background:transparent;color:var(--fg);border:1px solid var(--bd)}
+.warn{border-left:4px solid var(--gold);background:var(--card);padding:12px 16px;margin:20px 0;border-radius:0 8px 8px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px 16px}
+.card h3{margin:0 0 4px;font-size:16px}.card p{margin:0;color:var(--mut);font-size:15px}
+ol{padding-left:22px}li{margin:6px 0}code{background:var(--card);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-size:.9em}
+a{color:var(--link)}footer{color:var(--mut);font-size:14px;border-top:1px solid var(--bd);padding-top:16px;margin-top:40px}
+</style></head><body>
+<header><div class="in"><div class="wm">V<b>AI</b>DER LAB</div><div class="tag">Veterinary AI in Diagnostic Imaging and Radiotherapy</div></div></header>
+<main>
+<h1>VAIDER-mask</h1>
+<p class="lead">A veterinary DICOM anonymizer. It removes owner, patient and clinic identifiers from CT, MR and radiotherapy files, and keeps the key in a separate restricted folder.</p>
+<p><a class="btn" href="https://github.com/pbasran/VAIDER-mask/archive/refs/heads/main.zip">Download (zip)</a><a class="btn alt" href="https://github.com/pbasran/VAIDER-mask">View on GitHub</a></p>
+<div class="warn"><b>Draft v0.3. Not validated on real data.</b> Tested on synthetic CT and RTSTRUCT only. Test on phantom or synthetic data first, have a second person check the output, and follow your institution's rules before sharing any data. It does not remove text burned into image pixels. Provided as is, with no warranty.</div>
+
+<h2>Why it runs on your computer</h2>
+<p>Patient files should not be uploaded to a website. VAIDER-mask runs a small page from your own computer only (<code>127.0.0.1</code>). It makes no network calls after the first setup, sends no telemetry and uses no AI.</p>
+
+<h2>Get started</h2>
+<ol>
+<li>Install <a href="https://www.python.org/downloads/">Python 3</a> if you don't have it.</li>
+<li>Click <b>Download (zip)</b> above and unzip it somewhere outside any cloud-synced folder.</li>
+<li><b>Mac:</b> double-click <code>START_Mac.command</code> (if it is blocked, right-click and choose Open). <b>Windows:</b> double-click <code>START_Windows.bat</code>.</li>
+<li>The first run sets up its own Python environment and installs <code>pydicom</code> and <code>numpy</code>. This needs internet once. A page opens in your browser.</li>
+<li>Try it on synthetic data first: <code>python3 scripts/make_test_data.py my_test_folder</code></li>
+</ol>
+
+<h2>What it does</h2>
+<div class="grid">
+<div class="card"><h3>One folder per scan set</h3><p>Understands Pinnacle exports; skips duplicate ImageSet copies and keeps structure sets matched to their images.</p></div>
+<div class="card"><h3>Stable new IDs</h3><p>Assigned once, saved in the key and reused in later batches. Each site numbers its own patients.</p></div>
+<div class="card"><h3>Safe redaction</h3><p>Whole-word matching only; structure names are never changed. Dates shift per animal; UIDs are remapped consistently.</p></div>
+<div class="card"><h3>Checks after writing</h3><p>Reads the output back for leftover identifying text, changed pixels and broken references.</p></div>
+<div class="card"><h3>CE / No CE per set</h3><p>Records contrast status for each scan set, plus species, region and orientation.</p></div>
+<div class="card"><h3>Key kept apart</h3><p>The crosswalk and audit report go to a restricted folder, never into the shareable data.</p></div>
+</div>
+
+<footer>Built by the VAIDER Lab. Based on the Pinnacle de-identification pipeline developed by Morwen Xu. Released under the <a href="https://github.com/pbasran/VAIDER-mask/blob/main/LICENSE">GNU General Public License v3.0</a>.</footer>
+</main></body></html>
