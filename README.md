@@ -1,3 +1,5 @@
+<p align="left"><a href="https://www.vaiderlab.org"><img src="assets/vaiderlab-logo.png" alt="VAIDER Lab: Veterinary AI in Diagnostic Imaging and Radiotherapy" width="200"></a></p>
+
 # VAIDER-mask
 
 **Veterinary DICOM anonymizer** from the VAIDER Lab (Veterinary AI in Diagnostic Imaging and Radiotherapy).
