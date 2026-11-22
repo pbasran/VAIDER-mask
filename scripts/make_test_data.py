@@ -2,8 +2,10 @@
 Usage: python make_test_data.py <outdir>
 Creates 6 patient folders (45 slices each by default, so a first test run passes the 41-slice rule; the short series is deliberate): dicom_output_N + rtstruct_N.dcm (+ ImageSet_N.DICOM reference copies with a different frame),
 a dog named Max with a structure called Maxilla, an owner named Ana with a structure called PLANAR, a short series,
-a series with a missing orientation tag, a label/axes mismatch, and a structure set whose frame matches no CT."""
-import sys, numpy as np
+a series with a missing orientation tag, a label/axes mismatch, and a structure set whose frame matches no CT.
+Patient_106 and Patient_107 are real-export quirks that must still pass (see rt_chain and raw_export); Patient_106 also has a
+dose-report screenshot that must be excluded and a contour named after the dog that must be flagged."""
+import sys, numpy as np, pydicom
 from pathlib import Path
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.uid import generate_uid, ExplicitVRLittleEndian
@@ -75,4 +77,42 @@ def make(root, n_slices=45, prefix="VET"):
                 isd = d / "ImageSet_0.DICOM"; isd.mkdir(); other = generate_uid()
                 for z in range(ns): ct(isd / f"s{z}.dcm", name, pid, ow, st, se, other, "HFS", HFS, z, ce, sop=refs[z])
         (d / "notes.txt").write_text("not dicom")
+    rt_chain(root / "Patient_106")
+    raw_export(root / "Patient_107")
+
+def rt_chain(d):
+    """Real-world Pinnacle/Eclipse quirks that must still PASS: RTSTRUCT PatientID written differently, InstitutionName only on the
+    plan, plan -> structure set, dose and portal image -> plan, clinic and machine serial nested in BeamSequence, staff in free text."""
+    name, pid, ow = "Gus^Hound", "VET-1006", "Mia^Ortiz"
+    INST[0] = "Clinic A"; out = d / "dicom_output_0"; out.mkdir(parents=True); st, se, fr = generate_uid(), generate_uid(), generate_uid(); refs = []
+    for z in range(45):
+        refs.append(ct(out / f"s{z}.dcm", name, pid, ow, st, se, fr, "HFS", HFS, z))
+    rs(d / "rtstruct_0.dcm", name, pid, ow, st, fr, refs, ["Body", "GTV", "Gus_tumour"])   # a contour named after the dog: kept, but warned about
+    r = pydicom.dcmread(d / "rtstruct_0.dcm"); r.PatientID = pid.replace("-", ""); rs_sop = r.SOPInstanceUID; r.save_as(d / "rtstruct_0.dcm")
+    plan_sop = generate_uid(); ds = mk(d / "rtplan_0.dcm", "1.2.840.10008.5.1.4.1.1.481.5", "RTPLAN", plan_sop); common(ds, name, pid, ow, st, generate_uid())
+    del ds.InstitutionName; ds.InstitutionName = "Gus Clinic Oncology"; ds.FrameOfReferenceUID = fr; ds.RTPlanLabel = "Gus 10x4Gy"
+    ds.ReferringPhysicianName = "Okafor^Chinedu"; ds.AdmittingDiagnosesDescription = "Gus: nasal tumour, ref Dr Okafor"
+    i = Dataset(); i.ReferencedSOPClassUID = "1.2.840.10008.5.1.4.1.1.481.3"; i.ReferencedSOPInstanceUID = rs_sop; ds.ReferencedStructureSetSequence = [i]
+    b = Dataset(); b.BeamNumber = 1; b.InstitutionName = "Gus Clinic Oncology"; b.InstitutionalDepartmentName = "RadOnc Gus"; b.DeviceSerialNumber = "SN-77123"
+    ds.BeamSequence = [b]; ds.save_as(d / "rtplan_0.dcm")
+    for mod, cls, fn in (("RTDOSE", "1.2.840.10008.5.1.4.1.1.481.2", "rtdose_0.dcm"), ("RTIMAGE", "1.2.840.10008.5.1.4.1.1.481.1", "rtimage_0.dcm")):
+        ds = mk(d / fn, cls, mod, generate_uid()); common(ds, name, pid, ow, st, generate_uid()); ds.FrameOfReferenceUID = fr
+        i = Dataset(); i.ReferencedSOPClassUID = "1.2.840.10008.5.1.4.1.1.481.5"; i.ReferencedSOPInstanceUID = plan_sop; ds.ReferencedRTPlanSequence = [i]
+        ds.save_as(d / fn)
+    # a scanner dose-report screenshot (secondary capture, Modality CT): never output, it can show the name in the pixels
+    sc = d / "dicom_output_9"; sc.mkdir()
+    ds = mk(sc / "dose_report.dcm", "1.2.840.10008.5.1.4.1.1.7", "CT", generate_uid()); common(ds, name, pid, ow, st, generate_uid())
+    ds.ImageType = ["DERIVED", "SECONDARY", "SCREEN SAVE"]; ds.SeriesDescription = "Dose Report"; ds.FrameOfReferenceUID = fr
+    ds.ImagePositionPatient = [0, 0, 0]; ds.ImageOrientationPatient = HFS; ds.PatientPosition = "HFS"
+    ds.Rows = ds.Columns = 16; ds.SamplesPerPixel = 1; ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.BitsAllocated, ds.BitsStored, ds.HighBit, ds.PixelRepresentation = 8, 8, 7, 0; ds.PixelData = bytes(256); ds.save_as(sc / "dose_report.dcm")
+
+def raw_export(d):
+    """Corvus / XiO / GE AW style: no 128-byte preamble, no DICM prefix, no file meta, '.v2' file names. Must still PASS."""
+    name, pid, ow = "Hazel^Setter", "VET-1007", "Tom^Reyes"; INST[0] = "Clinic A"
+    d.mkdir(parents=True); st, se, fr = generate_uid(), generate_uid(), generate_uid()
+    for z in range(45):
+        f = d / f"img_{z:03d}.v2"; ct(f, name, pid, ow, st, se, fr, "HFS", HFS, z)
+        ds = pydicom.dcmread(f); ds.preamble = None; del ds.file_meta; pydicom.dcmwrite(f, ds, enforce_file_format=False, implicit_vr=True, little_endian=True)
+
 if __name__ == "__main__": make(sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 45, sys.argv[3] if len(sys.argv) > 3 else "VET")

@@ -1,0 +1,5 @@
+# Keep LF line endings in the repository, whatever the checkout platform.
+# START_Mac.command fails on a Mac if it has Windows (CRLF) line endings.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary

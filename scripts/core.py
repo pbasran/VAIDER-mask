@@ -18,8 +18,9 @@ import numpy as np
 import pydicom
 from pydicom.uid import UID
 
-VERSION = "0.3.2"
-DETACHED_STUDY = "1.2.840.10008.3.1.2.3.1"
+VERSION = "0.3.3"
+MIN_SHIFT = 30                     # date shift per animal is 30..364 days, never small enough to line up with the real dates
+STUDY_REF_CLASSES = {"1.2.840.10008.3.1.2.3.1", "1.2.840.10008.3.1.2.3.2", "1.2.840.10008.3.1.2.3.3"}  # detached study / study component mgmt
 
 @dataclass
 class Options:
@@ -72,7 +73,7 @@ UID_KW = {"StudyInstanceUID","SeriesInstanceUID","SOPInstanceUID","FrameOfRefere
 TEXT_VR = {"LO","SH","ST","LT","UT","PN","UC"}
 # Fields that are never text-redacted and never searched for leftovers (names we assign, and structure names).
 NO_REDACT = {"PatientName","PatientID","ReferringPhysicianName","InstitutionName","ROIName","ROIObservationLabel"}
-AUX = {"RTSTRUCT","RTPLAN","RTDOSE","RTRECORD","SR","PR","KO","REG","SEG"}
+AUX = {"RTSTRUCT","RTPLAN","RTDOSE","RTRECORD","RTIMAGE","SR","PR","KO","REG","SEG"}
 EXPECT = {"HFS": ((1,0,0),(0,1,0)), "HFP": ((-1,0,0),(0,-1,0)), "FFS": ((-1,0,0),(0,1,0)), "FFP": ((1,0,0),(0,-1,0))}
 RE_CT = re.compile(r"^dicom_output_(\d+)$", re.I)
 RE_RT = re.compile(r"^rt\w+_(\d+)\.dcm$", re.I)
@@ -129,6 +130,26 @@ def vec(v, n):
         return t if len(t) == n else None
     except Exception: return None
 
+KEEP_UI_KW = {"TransferSyntaxUID", "ReferencedTransferSyntaxUID", "ImplementationClassUID", "PrivateInformationCreatorUID",
+              "ContextGroupExtensionCreatorUID", "MappingResourceUID", "ContextUID", "CodingSchemeUID"}
+def remappable(kw, v):
+    vals = list(v) if (hasattr(v, "__iter__") and not isinstance(v, (str, bytes))) else [v]
+    if kw in UID_KW: return True
+    if kw in KEEP_UI_KW or "ClassUID" in kw or "Coding" in kw: return False
+    return not all(str(x).startswith("1.2.840.10008.") for x in vals)
+
+def new_file_meta(ds):
+    """A new File Meta Information header (PS3.15 Annex E: replace it, do not edit it). Only the SOP class, the NEW SOP instance UID,
+    the transfer syntax and VAIDER-mask's own implementation name; no AE titles, network addresses or private data from the source."""
+    from pydicom.dataset import FileMetaDataset
+    old = getattr(ds, "file_meta", None)
+    ts = old.get("TransferSyntaxUID") if old is not None else None
+    if not ts: ts = pydicom.uid.ImplicitVRLittleEndian if getattr(ds, "is_implicit_VR", True) else pydicom.uid.ExplicitVRLittleEndian
+    fm = FileMetaDataset()
+    fm.MediaStorageSOPClassUID = ds.SOPClassUID; fm.MediaStorageSOPInstanceUID = ds.SOPInstanceUID; fm.TransferSyntaxUID = ts
+    fm.ImplementationClassUID = pydicom.uid.PYDICOM_IMPLEMENTATION_UID; fm.ImplementationVersionName = f"VAIDERMASK {VERSION}"[:16]
+    return fm
+
 def walk(ds, fn):
     for el in list(ds):
         if el.VR == "SQ":
@@ -138,7 +159,7 @@ def walk(ds, fn):
 def image_refs(ds):
     r = set()
     def f(d, el):
-        if el.keyword == "ReferencedSOPInstanceUID" and el.value and str(d.get("ReferencedSOPClassUID", "")) != DETACHED_STUDY:
+        if el.keyword == "ReferencedSOPInstanceUID" and el.value and str(d.get("ReferencedSOPClassUID", "")) not in STUDY_REF_CLASSES:
             r.add(str(el.value))
     walk(ds, f); return r
 
@@ -176,7 +197,14 @@ def tokens_from(ds):
             for part in (v if isinstance(v, (list, tuple)) else [v]):
                 for w in re.split(r"[\^\s,;/_\-.]+", str(part)):
                     if len(w) >= 3: t.add(w)
-    for k in ("PatientID", "OtherPatientIDs"):
+    for k in ("ReferringPhysicianName", "PerformingPhysicianName", "OperatorsName", "PhysiciansOfRecord",
+              "NameOfPhysiciansReadingStudy", "RequestingPhysician", "ReviewerName"):
+        v = ds.get(k)
+        if v is not None:
+            for part in (v if isinstance(v, (list, tuple)) or getattr(v, "VM", 1) > 1 else [v]):
+                for w in re.split(r"[\^\s,;/_\-.]+", str(part)):
+                    if len(w) >= 3 and w.lower() not in ("dr", "drs", "dvm", "phd"): t.add(w)
+    for k in ("PatientID", "OtherPatientIDs", "AccessionNumber"):
         v = ds.get(k)
         if v is not None:
             for part in (v if isinstance(v, (list, tuple)) else [v]):
@@ -258,11 +286,10 @@ def locate(p, srcdir):
 def read_hdr(p):
     try: return pydicom.dcmread(p, stop_before_pixels=True), False
     except Exception: pass
-    if p.suffix.lower() == ".dcm":
-        try:
-            ds = pydicom.dcmread(p, stop_before_pixels=True, force=True)
-            if str(ds.get("Modality", "")): return ds, True
-        except Exception: pass
+    try:
+        ds = pydicom.dcmread(p, stop_before_pixels=True, force=True)
+        if str(ds.get("Modality", "")) and str(ds.get("SOPInstanceUID", "")) and str(ds.get("SOPClassUID", "")): return ds, True
+    except Exception: pass
     return None, False
 
 # ---------- scan: headers -> plan ----------
@@ -296,6 +323,7 @@ def scan(o, progress=lambda *a: None, cancel=None):
                  sdesc=str(ds.get("SeriesDescription", "")), sdate=str(ds.get("StudyDate", "")),
                  rows=str(ds.get("Rows", "")), cols=str(ds.get("Columns", "")), filled=set(), fixpos="", tokens=tokens_from(ds),
                  vet={k: str(ds.get(k, "")) for k in ("PatientSpeciesDescription", "PatientBreedDescription", "PatientSex", "PatientSexNeutered", "PatientAge")})
+        e["screenshot"] = str(ds.get("SOPClassUID", "")).startswith("1.2.840.10008.5.1.4.1.1.7") or "SCREEN SAVE" in [str(x).upper() for x in (ds.get("ImageType", []) or [])]
         e["ce"] = bool(str(ds.get("ContrastBolusAgent", "")).strip() or str(ds.get("ContrastBolusVolume", "")).strip() or str(ds.get("ContrastBolusRoute", "")).strip())
         if mod in AUX:
             e["refs"] = image_refs(ds)
@@ -323,6 +351,23 @@ def scan(o, progress=lambda *a: None, cancel=None):
                 for_uid=str(ds.get("FrameOfReferenceUID", "") or "")))
 
     ce_rep = parse_ce_report(o.ce_report) if str(o.ce_report).strip() else {}
+    img_key = {}; sop_key = {}
+    for e in entries:
+        if e["mod"] not in AUX:
+            if e["pidx"] is not None: img_key.setdefault((e["pf"], e["pidx"]), e["pkey"])
+            sop_key[e["sop"]] = e["pkey"]
+    for e in entries: sop_key.setdefault(e["sop"], e["pkey"])
+    has_img = {e["pkey"] for e in entries if e["mod"] not in AUX}
+    id_reassigned = 0
+    for a in [x for x in entries if x["mod"] in AUX] * 3:      # repeated so plan -> structure set -> CT chains resolve
+        k = img_key.get((a["pf"], a["pidx"])) if a["pidx"] is not None else None
+        if k is None and a["refs"]:
+            ks = {sop_key[r] for r in a["refs"] if r in sop_key} & has_img    # only move towards a patient that has images
+            if len(ks) == 1: k = ks.pop()
+        if a["pkey"] in has_img and k is None: continue
+        if k is not None: sop_key[a["sop"]] = k
+        if k is not None and k != a["pkey"]:
+            a["pkey"] = k; a["pid"] = next(e["pid"] for e in entries if e["pkey"] == k); a["rejoined"] = True; id_reassigned += 1
     bypid = {}
     for e in entries: bypid.setdefault(e["pkey"], []).append(e)
     patients = []
@@ -345,6 +390,15 @@ def scan(o, progress=lambda *a: None, cancel=None):
                 tgt = next((s for s in sets.values() if a["fors"] & {x["for_uid"] for x in s["images"]}), None)
             if tgt is None: orphans.append(a)
             else: tgt["aux"].append(a)
+        changed = True                               # plan -> structure set, dose -> plan, portal image -> plan: follow the chain
+        while orphans and changed:
+            changed = False
+            for a in list(orphans):
+                for st in sets.values():
+                    linked = {x["sop"] for x in st["aux"]}
+                    back = any(a["sop"] in x["refs"] for x in st["aux"])
+                    if (a["refs"] & linked) or back:
+                        st["aux"].append(a); orphans.remove(a); changed = True; break
         if orphans:
             sets[("A", pid)] = dict(gk=("A", pid), images=[], aux=orphans, pf=orphans[0]["pf"], pidx=orphans[0]["pidx"])
         slist = []
@@ -443,7 +497,17 @@ def qc_set(o, s, refhdrs, ce_rep):
     elif first and o.no_ce: s["ce"], s["ce_src"] = "No CE", "declared no contrast in dataset"
     elif first and any(e["ce"] for e in imgs): s["ce"], s["ce_src"] = "CE", "DICOM contrast tag"
     else: s["ce"], s["ce_src"] = ("Unknown", "no report, no contrast tag") if first else ("", "")
+    if not imgs: reasons.append("no matching image series")
+    if any(e.get("screenshot") for e in imgs): reasons.append("screenshot or secondary capture (may show identifiers in the pixels)")
     s["reasons"] = reasons; s["pass"] = not reasons
+
+def roi_name_hits(patients):
+    """Structure names are never redacted. Count contours whose name contains the animal's or owner's name or an ID, so the user can check them."""
+    n = 0
+    for p in patients:
+        rx = make_rx(p["tokens"])
+        if rx: n += sum(1 for s in p["keep"] for a in s["aux"] for r in a["rois"] if rx.search(str(r)))
+    return n
 
 def summarize(o, entries, patients, skipped, nref, nfiles):
     sets = [s for p in patients for s in p["sets"]]
@@ -454,7 +518,7 @@ def summarize(o, entries, patients, skipped, nref, nfiles):
     for e in entries:
         if e["pname"]: nm.setdefault(e["pkey"], set()).add(e["pname"])
     id_conflicts = sum(1 for v in nm.values() if len(v) > 1)   # one PatientID carrying more than one animal name
-    return dict(id_name_conflicts=id_conflicts, files_seen=nfiles, dicom_files=len(entries), skipped_not_dicom=skipped, imageset_files_skipped=nref,
+    return dict(roi_names_with_identifiers=roi_name_hits(patients), rt_objects_rejoined_to_patient=sum(1 for e in entries if e.get("rejoined")), id_name_conflicts=id_conflicts, files_seen=nfiles, dicom_files=len(entries), skipped_not_dicom=skipped, imageset_files_skipped=nref,
                 patients=len(patients), patients_kept=sum(1 for p in patients if p["keep"]), sets=len(sets), sets_kept=len(kept),
                 excluded_reasons=dict(reasons), modalities=cnt(e["mod"] for e in entries),
                 orientation=cnt(s["orient"] for s in sets), ce=cnt(s["ce"] for s in sets),
@@ -517,7 +581,7 @@ def run(o, progress=lambda *a: None, cancel=None):
             n = max([int(x["patient_number"]) for x in P.values() if x["site_id"] == str(o.site_id)], default=0) + 1
             r = dict(original_PatientID=p["pid"], source=p["src"], original_patient_folder="", site_id=str(o.site_id), patient_number=n,
                      new_PatientID=f"{o.id_prefix}{o.site_id}{n:03d}", new_PatientName=f"{o.site_label}_{n:03d}^{o.name_suffix}",
-                     date_offset_days=secrets.randbelow(364) + 1)
+                     date_offset_days=MIN_SHIFT + secrets.randbelow(365 - MIN_SHIFT))
             P[p["pkey"]] = r
         r["original_patient_folder"] = ";".join(sorted(set(filter(None, r["original_patient_folder"].split(";"))) | {x for x in p["pfs"] if x}))
         p["x"] = r
@@ -542,7 +606,8 @@ def run(o, progress=lambda *a: None, cancel=None):
     nfile = sum(len(s["images"]) + len(s["aux"]) for p in pats for s in p["keep"]); total = nfile * 2; done = 0
     C = dict(files_written=0, duplicates_skipped=0, private_removed=0, text_redactions=0, orientation_labels_fixed=0, tags_filled_files=0, errors=0)
     index_rows, set_rows, file_rows, rep_rows, pixh, errors = [], [], [], [], {}, []
-    ok_sets = []
+    ok_sets = []; src_refs = set()
+    src_sops = {e["sop"] for p in plan["patients"] for s in p["sets"] for e in s["images"] + s["aux"]}
     try:
         for p in pats:
             r = p["x"]; rx = make_rx(p["tokens"]) if o.redact_text else None; staff = {}; seen = set()
@@ -562,6 +627,7 @@ def run(o, progress=lambda *a: None, cancel=None):
                             seen.add(e["sop"])
                             ds = pydicom.dcmread(e["path"], force=e["forced"])
                             before = hashlib.sha256(ds.PixelData).hexdigest() if "PixelData" in ds else ""
+                            src_refs.update(image_refs(ds))
                             osop = str(ds.get("SOPInstanceUID", ""))
                             if e["filled"]:
                                 C["tags_filled_files"] += 1
@@ -573,7 +639,7 @@ def run(o, progress=lambda *a: None, cancel=None):
                             if o.quadruped and e["mod"] not in AUX: ds.AnatomicalOrientationType = "QUADRUPED"
                             def fn(d, el):
                                 kw = el.keyword
-                                if kw in UID_KW and el.VR == "UI" and el.value:
+                                if el.VR == "UI" and el.value and remappable(kw, el.value):
                                     el.value = [new_uid(v) for v in el.value] if el.VM > 1 else new_uid(el.value)
                                 elif el.VR in ("DA", "DT") and el.value and o.date_mode != "keep":
                                     if o.date_mode == "remove": el.value = ""; return
@@ -590,12 +656,19 @@ def run(o, progress=lambda *a: None, cancel=None):
                                         if k and k not in staff: staff[k] = f"Staff_{len(staff) + 1}"
                                         return staff.get(k, v)
                                     el.value = [code(v) for v in el.value] if el.VM > 1 else code(el.value)
+                                elif kw == "InstitutionName" and el.value:
+                                    el.value = o.institution
                                 elif rx and redactable(el) and el.VR != "PN":
                                     sv = str(el.value); s2 = rx.sub("REDACTED", sv)
                                     if s2 != sv: C["text_redactions"] += 1; el.value = s2
                             walk(ds, fn)
-                            for kw in remove:
-                                if kw in ds: del ds[kw]
+                            rm = set(remove)
+                            def strip(d):
+                                for el in list(d):
+                                    if el.keyword in rm: del d[el.tag]
+                                    elif el.VR == "SQ":
+                                        for it in el.value: strip(it)
+                            strip(ds)
                             if o.remove_owner:
                                 for el in list(ds.iterall()):
                                     if el.keyword and ("Comment" in el.keyword or "Signature" in el.keyword):
@@ -608,7 +681,8 @@ def run(o, progress=lambda *a: None, cancel=None):
                                 for t in [t for t in list(ds.keys()) if 0x6000 <= t.group <= 0x60FF]: del ds[t]
                             ds.PatientIdentityRemoved = "YES"; ds.DeidentificationMethod = f"VAIDER-mask {VERSION}"
                             dest = data / nid / sd / mod / f"{mod}_{i:04d}.dcm"
-                            dest.parent.mkdir(parents=True, exist_ok=True); ds.save_as(dest)
+                            ds.file_meta = new_file_meta(ds); ds.preamble = b"\0" * 128   # fresh header: nothing carried over from the source
+                            dest.parent.mkdir(parents=True, exist_ok=True); ds.save_as(dest, enforce_file_format=True)
                             rel = str(dest.relative_to(data)); pixh[rel] = before; C["files_written"] += 1; written[mod] += 1
                             index_rows.append([rel, nid, int(s["x"]["new_set"]), mod, str(ds.get("SeriesDescription", "")), str(ds.get("StudyDate", "")),
                                                str(ds.get("StudyInstanceUID", "")), str(ds.get("SeriesInstanceUID", "")), str(ds.SOPInstanceUID),
@@ -648,7 +722,7 @@ def run(o, progress=lambda *a: None, cancel=None):
         merge_table(data / "deid_index.csv", IH, index_rows, lambda r: r[0])
         merge_table(data / "deid_sets.csv", DH, set_rows, lambda r: f"{r[0]}|{r[1]}")
     # verify from disk with the same field rule and whole-word rule used for redaction
-    bad_text = bad_pix = bad_removed = 0; sops, refs = set(), set(); setfor = {}
+    bad_text = bad_pix = bad_removed = bad_meta = 0; sops, refs = set(), set(); setfor = {}
     rxs = {p["x"]["new_PatientID"]: (make_rx(p["tokens"]) if o.redact_text else None) for p in pats}
     for i, row in enumerate(index_rows):
         if cancel and cancel.is_set(): raise Cancelled()
@@ -657,7 +731,8 @@ def run(o, progress=lambda *a: None, cancel=None):
         if "PixelData" in chk and hashlib.sha256(chk.PixelData).hexdigest() != pixh.get(row[0]): bad_pix += 1
         rx = rxs.get(str(chk.PatientID))
         if rx and text_hits(chk, rx): bad_text += 1
-        if any(kw in chk for kw in remove): bad_removed += 1
+        if any(el.keyword in set(remove) for el in chk.iterall()): bad_removed += 1
+        if str(chk.file_meta.get("MediaStorageSOPInstanceUID", "")) != str(chk.SOPInstanceUID): bad_meta += 1
         sops.add(str(chk.SOPInstanceUID)); refs |= image_refs(chk)
         d = setfor.setdefault(str(Path(row[0]).parent.parent), dict(img=set(), rts=[]))
         if row[3] == "RTSTRUCT":
@@ -669,11 +744,11 @@ def run(o, progress=lambda *a: None, cancel=None):
     report = dict(tool="VAIDER-mask", version=VERSION, code_sha256=code_hash(), run_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                   operator=o.operator, reviewer_signoff=None, summary=summary, counters=C,
                   verification=dict(files_with_leftover_identifier_text=bad_text, files_with_removed_tags_still_present=bad_removed, changed_pixel_data=bad_pix,
-                                    unresolved_references=len(refs - sops), structure_sets_frame_mismatch_in_output=frame_bad),
+                                    unresolved_references=len(refs - sops - {new_uid(r) for r in src_refs - src_sops}), already_unresolved_in_source=len(src_refs - src_sops), file_meta_uid_mismatch=bad_meta, structure_sets_frame_mismatch_in_output=frame_bad),
                   options={k: v for k, v in asdict(o).items() if k not in ("src", "out", "crosswalk_dir", "operator", "ce_report")})
     (data / "run_report.json").write_text(json.dumps(report, indent=2))
     report["errors"] = errors[:20]
     v = report["verification"]
-    report["ok"] = not any((v["files_with_leftover_identifier_text"], v["files_with_removed_tags_still_present"], v["changed_pixel_data"],
+    report["ok"] = not any((v["file_meta_uid_mismatch"], v["files_with_leftover_identifier_text"], v["files_with_removed_tags_still_present"], v["changed_pixel_data"],
                             v["unresolved_references"], v["structure_sets_frame_mismatch_in_output"], C["errors"]))
     return report
