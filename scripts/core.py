@@ -18,7 +18,7 @@ import numpy as np
 import pydicom
 from pydicom.uid import UID
 
-VERSION = "0.3.3"
+VERSION = "0.4.0"
 MIN_SHIFT = 30                     # date shift per animal is 30..364 days, never small enough to line up with the real dates
 STUDY_REF_CLASSES = {"1.2.840.10008.3.1.2.3.1", "1.2.840.10008.3.1.2.3.2", "1.2.840.10008.3.1.2.3.3"}  # detached study / study component mgmt
 
@@ -50,6 +50,8 @@ class Options:
     no_ce: bool = False                # dataset has no contrast-enhanced scans
     ce_report: str = ""                # optional set_ce_contour_report.txt
     operator: str = ""
+    image_type: str = "ct"             # ct (CT / MR / radiotherapy scan sets) | xray (radiographs: DX, CR, ...)
+    skip_burned_in: bool = True        # X-ray: do not write images whose BurnedInAnnotation is YES
 
 OWNER = ["ResponsiblePerson","ResponsiblePersonRole","ResponsibleOrganization","PatientAddress","PatientTelephoneNumbers",
          "PatientMotherBirthName","PatientBirthName","OtherPatientIDs","OtherPatientNames","OtherPatientIDsSequence",
@@ -73,6 +75,10 @@ UID_KW = {"StudyInstanceUID","SeriesInstanceUID","SOPInstanceUID","FrameOfRefere
 TEXT_VR = {"LO","SH","ST","LT","UT","PN","UC"}
 # Fields that are never text-redacted and never searched for leftovers (names we assign, and structure names).
 NO_REDACT = {"PatientName","PatientID","ReferringPhysicianName","InstitutionName","ROIName","ROIObservationLabel"}
+XRAY_MODS = {"DX", "CR", "RG", "IO", "PX"}   # digital radiography, computed radiography, radiographic imaging, intra-oral (dental), panoramic
+# X-ray only: device and location tags that name the room, plate, detector or schedule (removed with "station" details)
+XRAY_REMOVE = ["PlateID", "CassetteID", "DetectorID", "PerformedStationName", "PerformedStationAETitle", "PerformedLocation",
+               "ScheduledStationName", "ScheduledStationAETitle", "ScheduledProcedureStepLocation", "RequestingService"]
 AUX = {"RTSTRUCT","RTPLAN","RTDOSE","RTRECORD","RTIMAGE","SR","PR","KO","REG","SEG"}
 EXPECT = {"HFS": ((1,0,0),(0,1,0)), "HFP": ((-1,0,0),(0,-1,0)), "FFS": ((-1,0,0),(0,1,0)), "FFP": ((1,0,0),(0,-1,0))}
 RE_CT = re.compile(r"^dicom_output_(\d+)$", re.I)
@@ -115,6 +121,7 @@ def validate(o):
     if not re.fullmatch(r"[A-Za-z0-9]+", o.id_prefix): raise ValueError("ID prefix: letters and digits only.")
     if o.date_mode not in ("shift", "remove", "keep"): raise ValueError("Bad date mode.")
     if o.orientation not in ("audit", "fill", "fill_fix"): raise ValueError("Bad orientation mode.")
+    if o.image_type not in ("ct", "xray"): raise ValueError("Image type must be ct or xray.")
     try: o.min_slices = max(0, int(o.min_slices))
     except Exception: raise ValueError("Minimum slice positions must be a whole number.")
     if str(o.ce_report).strip() and not Path(o.ce_report).expanduser().is_file(): raise ValueError("CE report file not found.")
@@ -324,6 +331,9 @@ def scan(o, progress=lambda *a: None, cancel=None):
                  rows=str(ds.get("Rows", "")), cols=str(ds.get("Columns", "")), filled=set(), fixpos="", tokens=tokens_from(ds),
                  vet={k: str(ds.get(k, "")) for k in ("PatientSpeciesDescription", "PatientBreedDescription", "PatientSex", "PatientSexNeutered", "PatientAge")})
         e["screenshot"] = str(ds.get("SOPClassUID", "")).startswith("1.2.840.10008.5.1.4.1.1.7") or "SCREEN SAVE" in [str(x).upper() for x in (ds.get("ImageType", []) or [])]
+        e.update(study=str(ds.get("StudyInstanceUID", "")), view=str(ds.get("ViewPosition", "") or "").strip(),
+                 body=str(ds.get("BodyPartExamined", "") or "").strip(), lat=str(ds.get("ImageLaterality", "") or ds.get("Laterality", "") or "").strip(),
+                 burned_tag=str(ds.get("BurnedInAnnotation", "") or "").strip().upper(), has_pixels=present(ds, "Rows"))
         e["ce"] = bool(str(ds.get("ContrastBolusAgent", "")).strip() or str(ds.get("ContrastBolusVolume", "")).strip() or str(ds.get("ContrastBolusRoute", "")).strip())
         if mod in AUX:
             e["refs"] = image_refs(ds)
@@ -351,6 +361,11 @@ def scan(o, progress=lambda *a: None, cancel=None):
                 for_uid=str(ds.get("FrameOfReferenceUID", "") or "")))
 
     ce_rep = parse_ce_report(o.ce_report) if str(o.ce_report).strip() else {}
+    other_types = 0
+    if o.image_type == "xray":                       # X-ray mode: radiographs only; CT, MR, RT objects, reports and presentation states are skipped
+        other_types = sum(1 for e in entries if e["mod"] not in XRAY_MODS)
+        entries = [e for e in entries if e["mod"] in XRAY_MODS]
+        for e in entries: e["pidx"] = None
     img_key = {}; sop_key = {}
     for e in entries:
         if e["mod"] not in AUX:
@@ -376,7 +391,8 @@ def scan(o, progress=lambda *a: None, cancel=None):
         groups = {}
         for e in lst:
             if e["mod"] in AUX: continue
-            gk = ("P", e["pf"], e["pidx"]) if e["pidx"] is not None else ("S", e["series"] or e["sop"])
+            if o.image_type == "xray": gk = ("X", e["study"] or e["sop"])   # one set per radiographic study (all views together)
+            else: gk = ("P", e["pf"], e["pidx"]) if e["pidx"] is not None else ("S", e["series"] or e["sop"])
             groups.setdefault(gk, []).append(e)
         sets = {gk: dict(gk=gk, images=imgs, aux=[], pf=imgs[0]["pf"], pidx=imgs[0]["pidx"]) for gk, imgs in groups.items()}
         orphans = []
@@ -403,15 +419,24 @@ def scan(o, progress=lambda *a: None, cancel=None):
             sets[("A", pid)] = dict(gk=("A", pid), images=[], aux=orphans, pf=orphans[0]["pf"], pidx=orphans[0]["pidx"])
         slist = []
         for gk, s in sorted(sets.items(), key=lambda kv: (kv[1]["pf"], kv[1]["pidx"] if kv[1]["pidx"] is not None else 9999, str(kv[0]))):
-            s["key"] = f"{s['pf']}|dicom_output_{s['pidx']}" if gk[0] == "P" else (f"{pid}|{gk[1]}" if gk[0] == "S" else f"{pid}|aux")
-            s["label"] = f"dicom_output_{s['pidx']}" if gk[0] == "P" else (gk[1] if gk[0] == "S" else "aux-only")
-            qc_set(o, s, refhdrs, ce_rep)
+            s["key"] = f"{s['pf']}|dicom_output_{s['pidx']}" if gk[0] == "P" else (f"{pid}|{gk[1]}" if gk[0] == "S" else (f"{pid}|study|{gk[1]}" if gk[0] == "X" else f"{pid}|aux"))
+            s["label"] = f"dicom_output_{s['pidx']}" if gk[0] == "P" else (gk[1] if gk[0] in ("S", "X") else "aux-only")
+            if o.image_type == "xray": qc_xray(o, s)
+            else: qc_set(o, s, refhdrs, ce_rep)
             slist.append(s)
         patients.append(dict(pid=lst[0]["pid"], pkey=pid, src=lst[0]["src"], pfs={e["pf"] for e in lst}, sets=slist, tokens=set().union(*[e["tokens"] for e in lst])))
     for p in patients:
         p["keep"] = [s for s in p["sets"] if s["pass"] or not o.skip_failed_sets]
     progress("scan", len(files), len(files), "Scan complete")
-    return dict(patients=patients, skipped=skipped, imageset_files=len(reffiles), nfiles=len(files)), summarize(o, entries, patients, skipped, len(reffiles), len(files))
+    summ = summarize(o, entries, patients, skipped, len(reffiles), len(files)); summ["image_type"] = o.image_type
+    if o.image_type == "xray":
+        kept = [e for p in patients for st in p["keep"] for e in st["images"]]
+        summ.update(other_types_skipped=other_types, images=len(entries), images_kept=len(kept),
+                    burned_in_skipped=sum(st.get("burned_skipped", 0) for p in patients for st in p["sets"]),
+                    screenshots_skipped=sum(st.get("screens_skipped", 0) for p in patients for st in p["sets"]),
+                    burned_in_tag_missing=sum(1 for e in kept if not e["burned_tag"]),
+                    views=dict(Counter(e["view"] or "not recorded" for e in kept)), body_parts=dict(Counter(e["body"] or "not recorded" for e in kept)))
+    return dict(patients=patients, skipped=skipped, imageset_files=len(reffiles), nfiles=len(files)), summ
 
 def interp_ipp(imgs, log):
     miss = [i for i, e in enumerate(imgs) if e["ipp"] is None]
@@ -509,6 +534,21 @@ def roi_name_hits(patients):
         if rx: n += sum(1 for s in p["keep"] for a in s["aux"] for r in a["rois"] if rx.search(str(r)))
     return n
 
+def qc_xray(o, s):
+    """Radiographs have no slices or 3D geometry, so the CT checks do not apply. Instead: drop screenshots always, drop images marked
+    BurnedInAnnotation=YES when asked, and fail a study with no usable image left."""
+    imgs = sorted(s["images"], key=lambda e: (e["inst"] is None, e["inst"] or 0, str(e["path"])))
+    screens = [e for e in imgs if e["screenshot"]]; imgs = [e for e in imgs if not e["screenshot"]]
+    burned = [e for e in imgs if e["burned"]]
+    if o.skip_burned_in: imgs = [e for e in imgs if not e["burned"]]
+    reasons = []
+    if not imgs: reasons.append("all images have burned-in text or are screenshots" if (burned or screens) else "no images")
+    if any(not e["has_pixels"] for e in imgs): reasons.append("image without pixel data")
+    s.update(images=imgs, order=imgs, screens_skipped=len(screens), burned_skipped=len(burned) if o.skip_burned_in else 0,
+             fills="", n_images=len(imgs), n_distinct=0, for_consistent=True, frame_match="", refs_found="", n_rois=0,
+             region=";".join(sorted({e["body"] for e in imgs if e["body"]})), orient="", orient_action="", ce="", ce_src="",
+             reasons=reasons, **{"pass": not reasons})
+
 def summarize(o, entries, patients, skipped, nref, nfiles):
     sets = [s for p in patients for s in p["sets"]]
     cnt = lambda it: dict(Counter(x for x in it if x))
@@ -558,6 +598,9 @@ IH = ["file", "new_patient_id", "new_set", "modality", "series_description", "st
 DH = ["new_patient_id", "new_set", "modalities", "n_images", "n_distinct_slice_positions", "slice_thickness", "rows", "columns", "species", "breed", "sex", "neutered", "age",
       "anatomical_region", "contoured_rois", "ce_status", "ce_source", "orientation_status", "orientation_action", "frame_match", "structure_refs_found", "tags_filled", "qc_pass", "qc_notes", "burned_in_flag"]
 
+XH = ["new_patient_id", "new_study", "modalities", "n_images", "views", "body_parts", "laterality", "species", "breed", "sex", "neutered", "age",
+      "burned_in_images_skipped", "screenshots_skipped", "images_without_burned_in_tag", "qc_pass", "qc_notes"]
+
 # ---------- run ----------
 class NothingToWrite(ValueError):
     """Raised when no scan set passes the checks. Carries the scan summary so the page can show the reasons."""
@@ -571,7 +614,11 @@ def run(o, progress=lambda *a: None, cancel=None):
     pats = [p for p in plan["patients"] if p["keep"]]
     if not pats:
         why = "; ".join(f"{k} ({v})" for k, v in (summary.get("excluded_reasons") or {}).items()) or "no DICOM image sets were found"
-        raise NothingToWrite(f"No scan sets passed the checks, so nothing was written. Reasons: {why}. Scroll down for the scan table, or lower the minimum slice count.", summary)
+        if o.image_type == "xray" and not summary.get("images"):
+            why = f"no radiographs (DX, CR) were found; {summary.get('other_types_skipped', 0)} other DICOM file(s) were skipped. For CT or radiotherapy data choose CT in section 0"
+        elif o.image_type == "ct" and sum(v for k, v in (summary.get("modalities") or {}).items() if k in XRAY_MODS) * 2 > sum((summary.get("modalities") or {}).values()):
+            why = "these look like radiographs (X-rays). Choose X-ray in section 0"
+        raise NothingToWrite(f"Nothing was written. Reasons: {why}. Scroll down for the scan table.", summary)
     xw.mkdir(parents=True, exist_ok=True); data.mkdir(parents=True, exist_ok=True)
     secf = xw / "deid_secret.bin"; secret = secf.read_bytes() if secf.exists() else secrets.token_bytes(32)
     P, S = load_xw(xw)
@@ -592,6 +639,7 @@ def run(o, progress=lambda *a: None, cancel=None):
                 rs = dict(set_key=s["key"], new_PatientID=r["new_PatientID"], new_set=k, original_patient_folder=s["pf"], original_set_label=s["label"])
                 S[s["key"]] = rs
             s["x"] = rs
+    xray = o.image_type == "xray"
     cache = {}
     def new_uid(u):
         if u not in cache: cache[u] = str(UID("2.25." + str(int(hmac.new(secret, str(u).encode(), hashlib.sha256).hexdigest()[:30], 16))))
@@ -603,6 +651,7 @@ def run(o, progress=lambda *a: None, cancel=None):
     if o.remove_birthdate: remove += BIRTH
     if o.remove_other_ids: remove += OTHER_IDS
     if not o.keep_vet_descriptors: remove += VET
+    if o.image_type == "xray" and o.remove_station: remove += XRAY_REMOVE
     nfile = sum(len(s["images"]) + len(s["aux"]) for p in pats for s in p["keep"]); total = nfile * 2; done = 0
     C = dict(files_written=0, duplicates_skipped=0, private_removed=0, text_redactions=0, orientation_labels_fixed=0, tags_filled_files=0, errors=0)
     index_rows, set_rows, file_rows, rep_rows, pixh, errors = [], [], [], [], {}, []
@@ -613,7 +662,7 @@ def run(o, progress=lambda *a: None, cancel=None):
             r = p["x"]; rx = make_rx(p["tokens"]) if o.redact_text else None; staff = {}; seen = set()
             offset = int(r["date_offset_days"]); nid, nname = r["new_PatientID"], r["new_PatientName"]
             for s in p["keep"]:
-                sd = f"set_{int(s['x']['new_set']):02d}"; groups = {}
+                sd = f"{'study' if xray else 'set'}_{int(s['x']['new_set']):02d}"; groups = {}
                 for e in s["order"] or s["images"]: groups.setdefault(e["mod"], []).append(e)
                 for a in sorted(s["aux"], key=lambda a: (a["mod"], str(a["path"]))): groups.setdefault(a["mod"], []).append(a)
                 written = Counter()
@@ -691,6 +740,15 @@ def run(o, progress=lambda *a: None, cancel=None):
                         except Cancelled: raise
                         except Exception as ex:
                             C["errors"] += 1; errors.append(f"{e['path'].name}: {type(ex).__name__}")
+                if xray:
+                    v = (s["images"][0]["vet"] if s["images"] and o.keep_vet_descriptors else {})
+                    set_rows.append([nid, int(s["x"]["new_set"]), ";".join(f"{m}:{n}" for m, n in written.items()), s["n_images"],
+                                     ";".join(sorted({e["view"] for e in s["images"] if e["view"]})), s["region"],
+                                     ";".join(sorted({e["lat"] for e in s["images"] if e["lat"]})),
+                                     v.get("PatientSpeciesDescription", ""), v.get("PatientBreedDescription", ""), v.get("PatientSex", ""),
+                                     v.get("PatientSexNeutered", ""), v.get("PatientAge", ""), s["burned_skipped"], s["screens_skipped"],
+                                     sum(1 for e in s["images"] if not e["burned_tag"]), "yes" if s["pass"] else "no", "; ".join(s["reasons"])])
+                    ok_sets.append(s); continue
                 img0 = (s["order"] or [None])[0]
                 v = img0["vet"] if (img0 and o.keep_vet_descriptors) else {}
                 set_rows.append([nid, int(s["x"]["new_set"]), ";".join(f"{m}:{n}" for m, n in written.items()), s["n_images"], s["n_distinct"],
@@ -720,7 +778,7 @@ def run(o, progress=lambda *a: None, cancel=None):
             "deleting it breaks the link between batches (pseudonyms, date shifts, set numbers and UIDs).\n"
             "Share only the DEID_DATA folder, after review and sign-off.\n")
         merge_table(data / "deid_index.csv", IH, index_rows, lambda r: r[0])
-        merge_table(data / "deid_sets.csv", DH, set_rows, lambda r: f"{r[0]}|{r[1]}")
+        merge_table(data / ("deid_xray.csv" if xray else "deid_sets.csv"), XH if xray else DH, set_rows, lambda r: f"{r[0]}|{r[1]}")
     # verify from disk with the same field rule and whole-word rule used for redaction
     bad_text = bad_pix = bad_removed = bad_meta = 0; sops, refs = set(), set(); setfor = {}
     rxs = {p["x"]["new_PatientID"]: (make_rx(p["tokens"]) if o.redact_text else None) for p in pats}

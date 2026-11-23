@@ -25,8 +25,9 @@ a{color:var(--link)}footer{color:var(--mut);font-size:14px;border-top:1px solid 
 <header><div class="in"><div class="wm">V<b>AI</b>DER LAB</div><div class="tag">Veterinary AI in Diagnostic Imaging and Radiotherapy</div></div></header>
 <main>
 <h1>VAIDER-mask</h1>
-<p class="lead">A veterinary DICOM anonymizer. It removes owner, patient and clinic identifiers from CT, MR and radiotherapy files, and keeps the key in a separate restricted folder.</p>
+<p class="lead">A veterinary DICOM anonymizer. It removes owner, patient and clinic identifiers from CT, MR and radiotherapy files and from radiographs (X-ray mode), and keeps the key in a separate restricted folder.</p>
 <p><a class="btn" href="https://github.com/pbasran/VAIDER-mask/archive/refs/heads/main.zip">Download (zip)</a><a class="btn alt" href="https://github.com/pbasran/VAIDER-mask">View on GitHub</a></p>
+<div class="warn"><b>Draft v0.4.0. Not validated on real veterinary data.</b> CT mode tested on synthetic data and on public phantom and human test-patient radiotherapy exports (Pinnacle, Eclipse, XiO, Oncentra and others). X-ray mode is new and tested on synthetic radiographs only. Test on phantom or synthetic data first, have a second person check the output, and follow your institution's rules before sharing any data. It does not remove text burned into image pixels. Provided as is, with no warranty.</div>
 
 <h2>Why it runs on your computer</h2>
 <p>Patient files should not be uploaded to a website. VAIDER-mask runs a small page from your own computer only (<code>127.0.0.1</code>). It makes no network calls after the first setup, sends no telemetry and uses no AI.</p>
@@ -37,7 +38,7 @@ a{color:var(--link)}footer{color:var(--mut);font-size:14px;border-top:1px solid 
 <li>Click <b>Download (zip)</b> above and unzip it somewhere outside any cloud-synced folder.</li>
 <li><b>Mac:</b> double-click <code>START_Mac.command</code> (if it is blocked, right-click and choose Open). <b>Windows:</b> double-click <code>START_Windows.bat</code>.</li>
 <li>The first run sets up its own Python environment and installs <code>pydicom</code> and <code>numpy</code>. This needs internet once. A page opens in your browser.</li>
-<li>Check your install: <code>python3 scripts/selftest.py</code> should print <code>14/14 checks passed</code>. Then try it on synthetic data: <code>python3 scripts/make_test_data.py my_test_folder</code></li>
+<li>Check your install: <code>python3 scripts/selftest.py</code> should print <code>31/31 checks passed</code>. Then try it on synthetic data: <code>python3 scripts/make_test_data.py my_test_folder</code></li>
 </ol>
 
 <h2>What it does</h2>
